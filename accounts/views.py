@@ -61,3 +61,10 @@ class LogoutView(APIView):
             return Response(
                 {"message": "Some error occurred"}, status=status.HTTP_400_BAD_REQUEST
             )
+        
+class UserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserSerializer(request.data)
+        return Response(serializer.data)
