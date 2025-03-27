@@ -1,0 +1,312 @@
+// serializers
+# api/serializers.py
+from rest_framework import serializers
+from .models import Trip, TripStop, HoursOfService, LogSheet, LogActivity
+
+class TripStopSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TripStop
+        fields = ['id', 'type', 'location', 'arrival_time', 'duration']
+
+class TripSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Trip
+        fields = ['id', 'pickup_location', 'dropoff_location', 'distance', 
+                  'estimated_hours', 'status', 'start_time']
+
+class TripDetailSerializer(serializers.ModelSerializer):
+    stops = TripStopSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Trip
+        fields = ['id', 'pickup_location', 'dropoff_location', 'distance', 
+                  'estimated_hours', 'status', 'start_time', 'end_time', 'stops']
+
+class HoursOfServiceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HoursOfService
+        fields = ['id', 'date', 'cycle_used', 'daily_used', 'driving_used']
+
+class LogActivitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LogActivity
+        fields = ['id', 'type', 'start_time', 'end_time', 'description', 'location']
+
+class LogSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LogSheet
+        fields = ['id', 'date', 'trip_description', 'hours_logged', 'status']
+
+class LogSheetDetailSerializer(serializers.ModelSerializer):
+    activities = LogActivitySerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = LogSheet
+        fields = ['id', 'date', 'trip_description', 'hours_logged', 
+                  'cycle_hours', 'status', 'activities']
+
+class RouteRequestSerializer(serializers.Serializer):
+    current_location = serializers.CharField()
+    pickup_location = serializers.CharField()
+    dropoff_location = serializers.CharField()
+    current_hours = serializers.FloatField()
+
+class RouteResponseSerializer(serializers.Serializer):
+    total_distance = serializers.FloatField()
+    driving_hours = serializers.FloatField()
+    total_hours = serializers.FloatField()
+    required_stops = serializers.IntegerField()
+    stops = TripStopSerializer(many=True)
+
+class GeocodingRequestSerializer(serializers.Serializer):
+    lat = serializers.FloatField()
+    lng = serializers.FloatField()
+
+
+    // views
+# api/views.py
+from rest_framework import status, viewsets
+from rest_framework.response import Response
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
+from django.http import HttpResponse
+from .models import Trip, HoursOfService, LogSheet, TripStop, LogActivity
+from .serializers import (
+    TripSerializer, TripDetailSerializer, HoursOfServiceSerializer,
+    LogSheetSerializer, LogSheetDetailSerializer, RouteRequestSerializer,
+    RouteResponseSerializer, GeocodingRequestSerializer
+)
+import datetime
+import math
+import requests
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+
+class CurrentHoursView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get today's hours or create default entry
+        today = datetime.date.today()
+        hours, created = HoursOfService.objects.get_or_create(
+            driver=request.user,
+            date=today,
+            defaults={
+                'cycle_used': 45.5, 
+                'daily_used': 8.5,
+                'driving_used': 6.5
+            }
+        )
+        serializer = HoursOfServiceSerializer(hours)
+        return Response(serializer.data)
+
+class RecentTripsView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get 5 most recent trips
+        trips = Trip.objects.filter(driver=request.user).order_by('-created_at')[:5]
+        serializer = TripSerializer(trips, many=True)
+        return Response(serializer.data)
+
+class RoutePlannerView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        serializer = RouteRequestSerializer(data=request.data)
+        if serializer.is_valid():
+            # Get validated data
+            current_location = serializer.validated_data['current_location']
+            pickup_location = serializer.validated_data['pickup_location']
+            dropoff_location = serializer.validated_data['dropoff_location']
+            current_hours = serializer.validated_data['current_hours']
+            
+            # In a real app, here you would:
+            # 1. Call a mapping/routing API to get actual distance and time
+            # 2. Calculate required stops based on HOS regulations
+            
+            # For demo, generate simulated route data
+            route_data = self._calculate_route(
+                current_location, 
+                pickup_location, 
+                dropoff_location, 
+                current_hours
+            )
+            
+            response_serializer = RouteResponseSerializer(route_data)
+            return Response(response_serializer.data)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def _calculate_route(self, current_location, pickup_location, dropoff_location, current_hours):
+        # This is a simplified simulation - in a real app you'd use a mapping API
+        
+        # Mock distance calculations (miles)
+        to_pickup_distance = 120  # Example distance
+        pickup_to_dropoff_distance = 580  # Example distance
+        total_distance = to_pickup_distance + pickup_to_dropoff_distance
+        
+        # Estimate driving hours (assume avg speed of 55 mph)
+        driving_hours = total_distance / 55
+        
+        # Calculate required stops
+        # 1. Mandatory 30-min break after 8 hours
+        # 2. 10-hour rest period after 11 hours driving
+        # 3. Fuel stop every 1000 miles
+        
+        required_rest_stops = math.floor(driving_hours / 8)
+        fuel_stops = math.floor(total_distance / 1000)
+        
+        # Calculate total trip time including stops and loading/unloading
+        total_hours = driving_hours + (required_rest_stops * 0.5) + 2  # 1hr each for pickup and dropoff
+        
+        # Generate stops
+        stops = []
+        
+        # Add pickup stop
+        stops.append({
+            'type': 'pickup',
+            'location': pickup_location,
+            'arrival_time': '08:00 AM',  # Example time
+            'duration': 1.0
+        })
+        
+        # Add rest stops at appropriate intervals
+        current_distance = 0
+        current_drive_time = 0
+        remaining_distance = pickup_to_dropoff_distance
+        
+        while remaining_distance > 0:
+            # Add a rest stop after every 8 hours of driving
+            if current_drive_time >= 8:
+                stops.append({
+                    'type': 'rest',
+                    'location': 'Rest Area',  # Would use actual locations in real app
+                    'arrival_time': '4:00 PM',  # Example time
+                    'duration': 0.5
+                })
+                current_drive_time = 0
+            
+            # Add fuel stop every 1000 miles
+            elif current_distance > 0 and current_distance % 1000 < 100:
+                stops.append({
+                    'type': 'fuel',
+                    'location': 'Fuel Station',  # Would use actual locations in real app
+                    'arrival_time': '2:00 PM',  # Example time
+                    'duration': 0.25
+                })
+            
+            # Simulate driving for 4 hours (or less if destination is reached)
+            drive_segment = min(4, remaining_distance / 55)
+            distance_segment = drive_segment * 55
+            
+            current_drive_time += drive_segment
+            current_distance += distance_segment
+            remaining_distance -= distance_segment
+        
+        # Add dropoff stop
+        stops.append({
+            'type': 'dropoff',
+            'location': dropoff_location,
+            'arrival_time': '3:00 PM',  # Example time
+            'duration': 1.0
+        })
+        
+        return {
+            'total_distance': total_distance,
+            'driving_hours': driving_hours,
+            'total_hours': total_hours,
+            'required_stops': len(stops),
+            'stops': stops
+        }
+
+class LogSheetViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        
+        queryset = LogSheet.objects.filter(driver=user)
+        
+        if start_date and end_date:
+            queryset = queryset.filter(date__range=[start_date, end_date])
+            
+        return queryset.order_by('-date')
+    
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return LogSheetDetailSerializer
+        return LogSheetSerializer
+
+    def get_pdf(self, request, pk=None):
+        log_sheet = self.get_object()
+        
+        # Create a file-like buffer to receive PDF data
+        buffer = io.BytesIO()
+        
+        # Create the PDF object, using the buffer as its "file"
+        p = canvas.Canvas(buffer, pagesize=letter)
+        
+        # Draw the PDF content
+        p.setFont("Helvetica-Bold", 16)
+        p.drawString(100, 750, f"Driver Log Sheet - {log_sheet.date}")
+        
+        p.setFont("Helvetica", 12)
+        p.drawString(100, 720, f"Driver: {log_sheet.driver.get_full_name()}")
+        p.drawString(100, 700, f"Trip: {log_sheet.trip_description or 'No Trip'}")
+        p.drawString(100, 680, f"Hours Logged: {log_sheet.hours_logged}")
+        p.drawString(100, 660, f"Cycle Hours: {log_sheet.cycle_hours} / 70")
+        
+        # Add activities
+        p.setFont("Helvetica-Bold", 14)
+        p.drawString(100, 620, "Daily Activities")
+        
+        y_position = 600
+        for activity in log_sheet.activities.all():
+            p.setFont("Helvetica-Bold", 12)
+            p.drawString(100, y_position, f"{activity.start_time} - {activity.end_time}: {activity.type}")
+            
+            p.setFont("Helvetica", 12)
+            p.drawString(120, y_position - 20, activity.description)
+            if activity.location:
+                p.drawString(120, y_position - 40, f"Location: {activity.location}")
+            
+            y_position -= 60
+        
+        # Close the PDF object
+        p.showPage()
+        p.save()
+        
+        # Get the value of the BytesIO buffer
+        pdf = buffer.getvalue()
+        buffer.close()
+        
+        # Create the HTTP response with PDF
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="log-{log_sheet.id}.pdf"'
+        response.write(pdf)
+        
+        return response
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def reverse_geocode(request):
+    serializer = GeocodingRequestSerializer(data=request.query_params)
+    if serializer.is_valid():
+        lat = serializer.validated_data['lat']
+        lng = serializer.validated_data['lng']
+        
+        # In a real application, you'd call a geocoding service like Google Maps or OpenStreetMap
+        # This is a placeholder implementation
+        
+        # For testing purposes, return dummy data
+        return Response({
+            'formatted_address': f"Location at {lat:.4f}, {lng:.4f}"
+        })
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

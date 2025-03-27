@@ -1,0 +1,9 @@
+{
+    "current_location": "Los Angeles",
+    "pickup_location": "San Fransisco",
+    "dropoff_location": "Sacramento",
+    "current_hours": {
+        "driving_used": 3.5,
+        "daily_used": 5.0
+    }
+}
