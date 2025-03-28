@@ -4,7 +4,7 @@ from .models import Trip, TripStop, HoursOfService, LogSheet, LogActivity
 class TripStopSerializer(serializers.ModelSerializer):
     class Meta:
         model = TripStop
-        fields = ['id', 'type', 'location', 'arrival_time', 'duration']
+        fields = ['id', 'type', 'location', 'arrival_time', 'duration', 'coordinates']
 
 class TripSerializer(serializers.ModelSerializer):
     class Meta:

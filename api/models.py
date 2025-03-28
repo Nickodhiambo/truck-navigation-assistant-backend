@@ -38,6 +38,7 @@ class TripStop(models.Model):
     location = models.CharField(max_length=255)
     arrival_time = models.CharField(max_length=50)
     duration = models.FloatField(help_text="Duration in hrs")
+    coordinates = models.CharField(max_length=100, default=1)
 
     def __str__(self):
         return f'{self.type} at {self.location}'

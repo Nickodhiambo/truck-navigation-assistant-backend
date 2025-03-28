@@ -83,6 +83,17 @@ class RoutePlannerView(APIView):
                 current_hours
             )
 
+            # Log trip details to database
+            trip = Trip.objects.create(
+                driver = request.user,
+                pickup_location = pickup_location,
+                dropoff_location = dropoff_location,
+                estimated_hours = route_data['total_hours'],
+                distance = route_data['total_distance']
+            )
+
+            trip.save()
+
             # Update hours of service after route calculation
             self._update_hours_of_service(
                 current_hours, 
@@ -176,6 +187,7 @@ class RoutePlannerView(APIView):
         stops.append({
             'type': 'start',
             'location': current_location,
+            'coordinates': self._geocode_location(geolocator, current_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': current_time.strftime('%I:%M %p'),
             'duration': 0
@@ -205,6 +217,7 @@ class RoutePlannerView(APIView):
             stops.append({
                 'type': 'rest',
                 'location': break_location,
+                'coordinates': self._geocode_location(geolocator, break_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
                 'duration': 0.5
@@ -225,6 +238,7 @@ class RoutePlannerView(APIView):
         stops.append({
             'type': 'pickup',
             'location': pickup_location,
+            'coordinates': self._geocode_location(geolocator, pickup_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
             'duration': 1.0
@@ -238,6 +252,7 @@ class RoutePlannerView(APIView):
             stops.append({
                 'type': 'overnight',
                 'location': pickup_location,
+                'coordinates': self._geocode_location(geolocator, pickup_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
                 'duration': 10.0
@@ -275,6 +290,7 @@ class RoutePlannerView(APIView):
                 stops.append({
                     'type': 'rest',
                     'location': rest_location,
+                    'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
                     'duration': 0.5
@@ -295,6 +311,7 @@ class RoutePlannerView(APIView):
                 stops.append({
                     'type': 'overnight',
                     'location': rest_location,
+                    'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
                     'duration': 10.0
@@ -327,6 +344,7 @@ class RoutePlannerView(APIView):
                 stops.append({
                     'type': 'fuel',
                     'location': fuel_location,
+                    'coordinates': self._geocode_location(geolocator, fuel_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=15)).strftime('%I:%M %p'),
                     'duration': 0.25
@@ -343,6 +361,7 @@ class RoutePlannerView(APIView):
         stops.append({
             'type': 'dropoff',
             'location': dropoff_location,
+            'coordinates': self._geocode_location(geolocator, dropoff_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
             'duration': 1.0
@@ -358,6 +377,8 @@ class RoutePlannerView(APIView):
             last_stop_time = last_stop_time + timedelta(days=1)
         
         total_trip_time = (last_stop_time - first_stop_time).total_seconds() / 3600
+
+        print(stops)
         
         return {
             'total_distance': round(total_distance, 1),
