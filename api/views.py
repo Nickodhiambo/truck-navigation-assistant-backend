@@ -57,6 +57,14 @@ class RecentTripsView(APIView):
         trips = Trip.objects.filter(driver=request.user).order_by('-created_at')[:5]
         serializer = TripSerializer(trips, many=True)
         return Response(serializer.data)
+
+class AllTripsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self,request):
+        trip_details = Trip.objects.filter(driver=request.user).order_by('-created_at')
+        serializer = TripSerializer(trip_details, many=True)
+        return Response(serializer.data)
         
 class RoutePlannerView(APIView):
     permission_classes = [IsAuthenticated]
