@@ -102,6 +102,34 @@ class RoutePlannerView(APIView):
 
             trip.save()
 
+            cycle_hours = current_hours.cycle_used + route_data['total_hours']
+
+            # Create a logsheet instance to receive trip activity information
+            logsheet = LogSheet.objects.create(
+                driver=request.user,
+                trip = trip,
+                date = datetime.date.today(),
+                hours_logged = route_data['total_hours'],
+                cycle_hours = cycle_hours,
+            )
+
+            logsheet.save()
+
+            stops = route_data['stops']
+            for stop in stops:
+                activity, duration, location, type = stop['activity'], stop['duration'], stop['location'], stop['type']
+            
+                # Log activity on sheet
+                log_activity = LogActivity.objects.create(
+                    log_sheet=logsheet,
+                    activity_type = activity,
+                    duration = duration,
+                    location = location,
+                    description = type
+                )
+
+                log_activity.save()
+
             # Update hours of service after route calculation
             self._update_hours_of_service(
                 current_hours, 
@@ -198,8 +226,10 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, current_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': current_time.strftime('%I:%M %p'),
-            'duration': 0
+            'duration': 0,
+            'activity': 'OFF_DUTY'
         })
+
         
         # Calculate drive to pickup
         current_driving_segment = to_pickup_duration
@@ -228,7 +258,8 @@ class RoutePlannerView(APIView):
                 'coordinates': self._geocode_location(geolocator, break_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
-                'duration': 0.5
+                'duration': 0.5,
+                'activity': 'ON_DUTY'
             })
             
             # Update times
@@ -249,7 +280,8 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, pickup_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
-            'duration': 1.0
+            'duration': 1.0,
+            'activity': 'ON_DUTY'
         })
         
         # Update current time after pickup
@@ -263,7 +295,8 @@ class RoutePlannerView(APIView):
                 'coordinates': self._geocode_location(geolocator, pickup_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
-                'duration': 10.0
+                'duration': 10.0,
+                'activity': 'SLEEPER'
             })
             current_time += timedelta(hours=10)
             current_driving_used = 0
@@ -301,7 +334,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
-                    'duration': 0.5
+                    'duration': 0.5,
+                    'activity': 'ON_DUTY'
                 })
                 
                 current_time += timedelta(minutes=30)
@@ -322,7 +356,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
-                    'duration': 10.0
+                    'duration': 10.0,
+                    'activity': 'SLEEPER'
                 })
                 
                 current_time += timedelta(hours=10)
@@ -355,7 +390,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, fuel_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=15)).strftime('%I:%M %p'),
-                    'duration': 0.25
+                    'duration': 0.25,
+                    'activity': 'ON_DUTY'
                 })
                 
                 current_time += timedelta(minutes=15)
@@ -372,7 +408,8 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, dropoff_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
-            'duration': 1.0
+            'duration': 1.0,
+            'activity': 'ON_DUTY'
         })
         
         # Calculate total trip time
@@ -386,7 +423,6 @@ class RoutePlannerView(APIView):
         
         total_trip_time = (last_stop_time - first_stop_time).total_seconds() / 3600
 
-        print(stops)
         
         return {
             'total_distance': round(total_distance, 1),
@@ -426,7 +462,7 @@ class RoutePlannerView(APIView):
         # Using a public OSRM instance
         base_url = "https://router.project-osrm.org/route/v1/driving/"
         url = f"{base_url}{start_coords};{end_coords}?overview=full&alternatives=false&steps=true"
-        print(start_coords, end_coords)
+       
         
         response = requests.get(url)
         if response.status_code != 200:
@@ -465,7 +501,7 @@ class RoutePlannerView(APIView):
                 # Extract a location name from the step instructions
                 instruction = step.get('name', '')
                 if instruction:
-                    step_location = f"Rest Area near {instruction}"
+                    step_location = instruction
                 break
         
         return step_location
@@ -496,7 +532,7 @@ class RoutePlannerView(APIView):
                 # Extract a location name from the step instructions
                 instruction = step.get('name', '')
                 if instruction:
-                    step_location = f"Fuel Station near {instruction}"
+                    step_location = instruction
                 break
         
         return step_location

@@ -142,8 +142,8 @@ class LogActivity(models.Model):
 
     log_sheet = models.ForeignKey(LogSheet, on_delete=models.CASCADE, related_name="activities")
     activity_type = models.CharField(max_length=20, choices=ACTIVITY_TYPES)
-    start_time = models.CharField(max_length=10)
-    end_time = models.CharField(max_length=10)
+    start_time = models.CharField(max_length=10, default=1)
+    end_time = models.CharField(max_length=10, default=1)
     description = models.CharField(max_length=255)
     location = models.CharField(max_length=255, null=True, blank=True)
 
