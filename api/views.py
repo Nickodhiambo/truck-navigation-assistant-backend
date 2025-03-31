@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 # Django imports
+import os
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 
@@ -24,6 +26,7 @@ import requests
 import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from PyPDF2 import PdfReader, PdfWriter
 from datetime import timedelta
 from geopy.geocoders import Nominatim
     
@@ -123,7 +126,6 @@ class RoutePlannerView(APIView):
                 log_activity = LogActivity.objects.create(
                     log_sheet=logsheet,
                     activity_type = activity,
-                    duration = duration,
                     location = location,
                     description = type
                 )
@@ -499,9 +501,16 @@ class RoutePlannerView(APIView):
             current_distance += step['distance']
             if current_distance >= target_distance:
                 # Extract a location name from the step instructions
-                instruction = step.get('name', '')
+                instruction = step.get('maneuver', {}).get('location', [])
                 if instruction:
-                    step_location = instruction
+                    long = instruction[0]
+                    lat = instruction[1]
+
+                    geolocator = Nominatim(user_agent="trucking_route_planner")
+                    location = geolocator.reverse(f'{lat}, {long}')
+                    address = location.address
+
+                    step_location = address
                 break
         
         return step_location
@@ -529,10 +538,16 @@ class RoutePlannerView(APIView):
         for step in steps:
             current_distance += step['distance']
             if current_distance >= target_distance:
-                # Extract a location name from the step instructions
-                instruction = step.get('name', '')
+                instruction = step.get('maneuver', {}).get('location', [])
                 if instruction:
-                    step_location = instruction
+                    long = instruction[0]
+                    lat = instruction[1]
+
+                    geolocator = Nominatim(user_agent="trucking_route_planner")
+                    location = geolocator.reverse(f'{lat}, {long}')
+                    address = location.address
+                    
+                    step_location = address
                 break
         
         return step_location
@@ -552,3 +567,37 @@ def reverse_geocode(request):
             {'formatted_address': address}
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# @api_view(['GET'])
+# def generate_driver_log_pdf(request, log_id):
+#     try:
+#         # Get the driver log data
+#         driver_log = LogSheet.objects.get(id=log_id)
+        
+#         # Create a buffer for the PDF
+#         buffer = io.BytesIO()
+        
+#         # Get the absolute path to your PDF template
+#         template_path = os.path.join(settings.BASE_DIR, 'static', 'pdf_templates', 'blank-paper-log.pdf')
+        
+#         # Check if file exists
+#         if not os.path.exists(template_path):
+#             return Response({'error': 'PDF template not found'}, status=404)
+        
+#         # Open the template PDF
+#         template_pdf = PdfReader(open(template_path, 'rb'))
+#         output_pdf = PdfWriter()
+        
+        # Get the first page of the template
+        # template_page = template_pdf.pages[0]
+        # output_pdf.add_page(template_page)
+
+        # # Create a new PDF with ReportLab to overlay data
+        # overlay_buffer = io.BytesIO()
+        # c = canvas.Canvas(overlay_buffer, pagesize=letter)
+
+        # c.drawString(100, 680, f"Date: {driver_log.date.strftime('%m/%d/%Y')}")
+        # c.drawString(100, 600, f"Starting Location: {driver_log.trip.pickup_location}")
+        # c.drawString(100, 580, f"Ending Location: {driver_log.trip.dropoff_location}")
+        # c.drawString(100, 580, f"Ending Location: {driver_log.trip.distance}")
