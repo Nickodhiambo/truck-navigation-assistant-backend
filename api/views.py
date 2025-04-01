@@ -18,6 +18,7 @@ from .serializers import (
     LogSheetSerializer, LogSheetDetailSerializer, RouteRequestSerializer,
     RouteResponseSerializer, GeocodingRequestSerializer
 )
+from accounts.models import DriverProfile
 
 # Third part API imports
 import datetime
@@ -120,14 +121,18 @@ class RoutePlannerView(APIView):
 
             stops = route_data['stops']
             for stop in stops:
-                activity, duration, location, type = stop['activity'], stop['duration'], stop['location'], stop['type']
+                activity = stop['activity']
+                start_time, end_time = stop['arrival_time'], stop['depature_time']
+                location, type = stop['location'], stop['type']
             
                 # Log activity on sheet
                 log_activity = LogActivity.objects.create(
                     log_sheet=logsheet,
                     activity_type = activity,
                     location = location,
-                    description = type
+                    description = type,
+                    start_time=start_time,
+                    end_time=end_time
                 )
 
                 log_activity.save()
@@ -569,35 +574,142 @@ def reverse_geocode(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# @api_view(['GET'])
-# def generate_driver_log_pdf(request, log_id):
-#     try:
-#         # Get the driver log data
-#         driver_log = LogSheet.objects.get(id=log_id)
+@api_view(['GET'])
+def generate_driver_log_pdf(request, log_id):
+    try:
+        # Get the driver log data
+        driver_log = LogSheet.objects.get(id=log_id)
+        activities = driver_log.activities.all()
         
-#         # Create a buffer for the PDF
-#         buffer = io.BytesIO()
+        # Create a buffer for the PDF
+        buffer = io.BytesIO()
         
-#         # Get the absolute path to your PDF template
-#         template_path = os.path.join(settings.BASE_DIR, 'static', 'pdf_templates', 'blank-paper-log.pdf')
+        # Get the absolute path to your PDF template
+        template_path = os.path.join(settings.BASE_DIR, 'static', 'pdf_templates', 'blank-paper-log.pdf')
         
-#         # Check if file exists
-#         if not os.path.exists(template_path):
-#             return Response({'error': 'PDF template not found'}, status=404)
+        # Check if file exists
+        if not os.path.exists(template_path):
+            return Response({'error': 'PDF template not found'}, status=404)
         
-#         # Open the template PDF
-#         template_pdf = PdfReader(open(template_path, 'rb'))
-#         output_pdf = PdfWriter()
+        # Open the template PDF
+        template_pdf = PdfReader(open(template_path, 'rb'))
+        output_pdf = PdfWriter()
         
         # Get the first page of the template
-        # template_page = template_pdf.pages[0]
-        # output_pdf.add_page(template_page)
+        template_page = template_pdf.pages[0]
+        output_pdf.add_page(template_page)
 
-        # # Create a new PDF with ReportLab to overlay data
-        # overlay_buffer = io.BytesIO()
-        # c = canvas.Canvas(overlay_buffer, pagesize=letter)
+        # Create a new PDF with ReportLab to overlay data
+        overlay_buffer = io.BytesIO()
+        c = canvas.Canvas(overlay_buffer, pagesize=letter)
 
-        # c.drawString(100, 680, f"Date: {driver_log.date.strftime('%m/%d/%Y')}")
-        # c.drawString(100, 600, f"Starting Location: {driver_log.trip.pickup_location}")
-        # c.drawString(100, 580, f"Ending Location: {driver_log.trip.dropoff_location}")
-        # c.drawString(100, 580, f"Ending Location: {driver_log.trip.distance}")
+        driver = DriverProfile.objects.get(
+            user=request.driver
+        )
+
+        c.drawString(233.2, 131.0, driver_log.date.strftime('%m/%d/%Y'))
+        c.drawString(117.6, 165.7, driver_log.trip.pickup_location)
+        c.drawString(331.5, 167.7, driver_log.trip.dropoff_location)
+        c.drawString(206.2, 204.3, driver_log.trip.distance)
+        c.drawString(113.7, 248.6, driver.driver_license)
+
+        # Define grid parameters according to the blank log
+        grid_start_x = 73.2  # Left edge of grid
+        grid_start_y = 412.4 # Bottom edge of grid
+        grid_width = 454.9   # Total width of the 24-hour grid
+        grid_height = 19.2  # Total height of the activity grid
+
+        # Define activity row positions (y-coordinates)
+        activity_rows = {
+            'OFF_DUTY': grid_start_y + grid_height * 0.8,
+            'SLEEPER': grid_start_y + grid_height * 0.6,
+            'Driving': grid_start_y + grid_height * 0.4,
+            'ON_DUTY': grid_start_y + grid_height * 0.2,
+        }
+
+        # Function to convert 12-hour time string to x-coordinate
+        def time_to_x_coord(time_str):
+            try:
+                # Handle different possible 12-hour formats
+                if ':' in time_str:
+                    # Format like "2:30 PM" or "10:45 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour_minute = time_parts[0].split(':')
+                    hour = int(hour_minute[0])
+                    minute = int(hour_minute[1]) if len(hour_minute) > 1 else 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                else:
+                    # Format like "2 PM" or "10 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour = int(time_parts[0])
+                    minute = 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                
+                # Convert to 24-hour format
+                if am_pm == 'PM' and hour < 12:
+                    hour += 12
+                elif am_pm == 'AM' and hour == 12:
+                    hour = 0
+                
+                # Calculate position on 24-hour grid
+                hour_fraction = hour + (minute / 60)
+                x_position = grid_start_x + (hour_fraction / 24) * grid_width
+                return x_position
+            except (ValueError, IndexError):
+                # Return default position if conversion fails
+                print(f"Could not parse time: {time_str}")
+                return grid_start_x
+            
+            # Draw activity lines
+        for activity in activities:
+            # Get y-coordinate for this activity type
+            y_position = activity_rows.get(activity.activity_type, grid_start_y)
+            
+            # Get x-coordinates for start and end times
+            start_x = time_to_x_coord(activity.start_time)
+            end_x = time_to_x_coord(activity.end_time)
+            
+            # Set line properties
+            c.setStrokeColorRGB(0, 0, 0)  # Black line
+            c.setLineWidth(2)             # Line thickness
+            
+            # Draw the horizontal line
+            c.line(start_x, y_position, end_x, y_position)
+            
+            # Draw small vertical markers at start and end (optional)
+            c.line(start_x, y_position - 5, start_x, y_position + 5)
+            c.line(end_x, y_position - 5, end_x, y_position + 5)
+            
+            # # Add activity description if space permits
+            # if end_x - start_x > 50:  # Only add text if there's enough space
+            #     c.setFont("Helvetica", 8)
+            #     text_width = c.stringWidth(activity.description, "Helvetica", 8)
+            #     if text_width < (end_x - start_x):
+            #         c.drawString(start_x + 5, y_position + 8, activity.description)
+            
+            # # Add location text below the grid (optional)
+            # if activity.location:
+            #     c.setFont("Helvetica", 8)
+            #     c.drawString(start_x, grid_start_y - 15, activity.location)
+        
+        c.save()
+        
+        # Merge the template with the overlay
+        overlay_buffer.seek(0)
+        overlay_pdf = PdfReader(overlay_buffer)
+        template_page.merge_page(overlay_pdf.pages[0])
+        
+        # Write the output PDF to the response buffer
+        output_pdf.write(buffer)
+        buffer.seek(0)
+        
+        # Create response with PDF
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="driver_log_{log_id}.pdf"'
+        
+        return response
+        
+    except LogSheet.DoesNotExist:
+        return Response({'error': 'Log sheet not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
