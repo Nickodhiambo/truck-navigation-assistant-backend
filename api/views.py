@@ -122,7 +122,7 @@ class RoutePlannerView(APIView):
             stops = route_data['stops']
             for stop in stops:
                 activity = stop['activity']
-                start_time, end_time = stop['arrival_time'], stop['depature_time']
+                start_time, end_time = stop['arrival_time'], stop['departure_time']
                 location, type = stop['location'], stop['type']
             
                 # Log activity on sheet
@@ -575,10 +575,11 @@ def reverse_geocode(request):
 
 
 @api_view(['GET'])
-def generate_driver_log_pdf(request, log_id):
+def generate_driver_log_pdf(request):
     try:
         # Get the driver log data
-        driver_log = LogSheet.objects.get(id=log_id)
+        from datetime import datetime
+        driver_log = LogSheet.objects.get(date=datetime.today())
         activities = driver_log.activities.all()
         
         # Create a buffer for the PDF
