@@ -422,11 +422,12 @@ class RoutePlannerView(APIView):
         # Calculate total trip time
         first_stop_time = datetime.strptime(stops[0]['arrival_time'], '%I:%M %p')
         last_stop_time = datetime.strptime(stops[-1]['departure_time'], '%I:%M %p')
+
         
         # Handle date crossing
         if last_stop_time < first_stop_time:
             # Add a day
-            last_stop_time = last_stop_time + timedelta(days=1)
+            last_stop_time = last_stop_time + timedelta(hours=24)
         
         total_trip_time = (last_stop_time - first_stop_time).total_seconds() / 3600
 
@@ -532,7 +533,7 @@ class RoutePlannerView(APIView):
             str: Description of a fuel stop location
         """
         # Similar to finding rest stops, but looking for gas stations
-        # In production, you would use OSM or Overpass API to find actual gas stations
+        # Would use OSM or Overpass API to find actual gas stations
         steps = route.get('legs', [{}])[0].get('steps', [])
         
         # Find the step that corresponds roughly to the ratio
@@ -597,21 +598,17 @@ def generate_driver_log_pdf(request):
         duty_used = str(current_hours.daily_used)
         driving_used = str(current_hours.driving_used)
         
-        # Create a fresh PDF (not using template)
+        # Create a fresh PDF
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer, pagesize=letter)
 
-        print(driver.driver_license)
-        no = driver.driver_license
-        
-        # Add a heading to show this is working
         c.setFont("Helvetica", 18)
         c.setFillColorRGB(0, 0, 0)
         c.drawString(50, 750, "Driver Log Sheet")
         c.drawString(350, 750.0, driver_log.date.strftime('%m/%d/%Y'))
         c.drawString(100, 710, f'Tractor number: {driver.driver_license}')
-        c.drawString(100, 665.7, f'From: {driver_log.trip.pickup_location}')  # Adjusted Y coordinate
-        c.drawString(331.5, 667.7, f'To: {driver_log.trip.dropoff_location}')  # Adjusted Y coordinate
+        c.drawString(100, 665.7, f'From: {driver_log.trip.pickup_location}')
+        c.drawString(331.5, 667.7, f'To: {driver_log.trip.dropoff_location}')
         c.drawString(100, 630.3, f'Total Distance (miles): {str(driver_log.trip.distance)}')
         c.drawString(100, 600, f'Total driving time (Hrs): {driving_used}')
         c.drawString(331.5, 600, f'Total duty time (Hrs): {duty_used}')
@@ -621,6 +618,48 @@ def generate_driver_log_pdf(request):
         grid_start_y = 412.4
         grid_width = 454.9
         grid_height = 19.2
+
+        # Define activity row positions (y-coordinates)
+        activity_rows = {
+            'OFF_DUTY': grid_start_y + (3 * grid_height),
+            'SLEEPER': grid_start_y + (2 * grid_height),
+            'Driving': grid_start_y + (1 * grid_height),
+            'ON_DUTY': grid_start_y
+        }
+
+        # Function to convert 12-hour time string to x-coordinate
+        def time_to_x_coord(time_str):
+            try:
+                # Handle different possible 12-hour formats
+                if ':' in time_str:
+                    # Format like "2:30 PM" or "10:45 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour_minute = time_parts[0].split(':')
+                    hour = int(hour_minute[0])
+                    minute = int(hour_minute[1]) if len(hour_minute) > 1 else 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                else:
+                    # Format like "2 PM" or "10 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour = int(time_parts[0])
+                    minute = 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                
+                # Convert to 24-hour format
+                if am_pm == 'PM' and hour < 12:
+                    hour += 12
+                elif am_pm == 'AM' and hour == 12:
+                    hour = 0
+                
+                # Calculate position on 24-hour grid
+                hour_fraction = hour + (minute / 60)
+                x_position = grid_start_x + (hour_fraction / 24) * grid_width
+                return x_position
+            
+            except (ValueError, IndexError):
+                # Return default position if conversion fails
+                print(f"Could not parse time: {time_str}")
+                return grid_start_x
         
         # Draw the grid framework
         c.setStrokeColorRGB(0, 0, 1)  # Blue for grid lines
@@ -642,22 +681,22 @@ def generate_driver_log_pdf(request):
         c.drawString(grid_start_x - 60, grid_start_y + (2 * grid_height), "SLEEPER")
         c.drawString(grid_start_x - 60, grid_start_y + (1 * grid_height), "DRIVING")
         c.drawString(grid_start_x - 60, grid_start_y, "ON DUTY")
-        
-        # Draw some test activity lines
-        c.setStrokeColorRGB(1, 0, 0)  # Red
-        c.setLineWidth(2)
-        
-        # Test line for OFF_DUTY (6am-8am)
-        y_off = grid_start_y + (3 * grid_height)
-        x_start = grid_start_x + (6 * (grid_width/24))
-        x_end = grid_start_x + (8 * (grid_width/24))
-        c.line(x_start, y_off, x_end, y_off)
-        
-        # Test line for DRIVING (10am-2pm)
-        y_drive = grid_start_y + (1 * grid_height)
-        x_start = grid_start_x + (10 * (grid_width/24))
-        x_end = grid_start_x + (14 * (grid_width/24))
-        c.line(x_start, y_drive, x_end, y_drive)
+
+        for activity in activities:
+            # Get y-coordinate for this activity type
+            y_position = activity_rows.get(activity.activity_type, grid_start_y)
+            
+            # Get x-coordinates for start and end times
+            start_x = time_to_x_coord(activity.start_time)
+            end_x = time_to_x_coord(activity.end_time)
+            
+            # Set line properties
+            c.setStrokeColorRGB(0, 0, 0)  # Black line
+            c.setLineWidth(2)             # Line thickness
+            
+            # Draw the horizontal line
+            c.line(start_x, y_position, end_x, y_position)
+            
         
         # Save the canvas
         c.save()
@@ -675,160 +714,3 @@ def generate_driver_log_pdf(request):
         import traceback
         print(traceback.format_exc())
         return Response({'error': str(e)}, status=500)
-
-
-# @api_view(['GET'])
-# def generate_driver_log_pdf(request):
-#     try:
-#         # Get the driver log data
-#         from datetime import datetime
-#         driver_log = LogSheet.objects.get(date=datetime.today())
-#         activities = driver_log.activities.all()
-        
-#         # Get the absolute path to your PDF template
-#         template_path = os.path.join(settings.BASE_DIR, 'static', 'pdf_templates', 'blank-paper-log.pdf')
-        
-#         # Check if file exists
-#         if not os.path.exists(template_path):
-#             return Response({'error': 'PDF template not found'}, status=404)
-        
-#         # Create a buffer for the final PDF
-#         buffer = io.BytesIO()
-        
-#         # Open the template PDF
-#         template_pdf = PdfReader(open(template_path, 'rb'))
-#         output_pdf = PdfWriter()
-        
-#         # Get the first page of the template
-#         template_page = template_pdf.pages[0]
-#         output_pdf.add_page(template_page)
-
-#         # Create a new PDF with ReportLab to overlay data
-#         overlay_buffer = io.BytesIO()
-#         c = canvas.Canvas(overlay_buffer, pagesize=letter)
-
-#         # Get driver info
-#         driver = DriverProfile.objects.get(
-#             user=request.user
-#         )
-
-#         # Set font before drawing text
-#         c.setFont("Helvetica", 50)
-
-#         # Draw text data on the canvas
-#         c.drawString(233.2, 731.0, driver_log.date.strftime('%m/%d/%Y'))  # Adjusted Y coordinate
-#         c.drawString(117.6, 665.7, driver_log.trip.pickup_location)  # Adjusted Y coordinate
-#         c.drawString(331.5, 667.7, driver_log.trip.dropoff_location)  # Adjusted Y coordinate
-#         c.drawString(206.2, 604.3, str(driver_log.trip.distance))  # Adjusted Y coordinate
-#         c.drawString(113.7, 548.6, driver.driver_license)  # Adjusted Y coordinate
-
-#         # Draw some test activity lines
-#         c.setStrokeColorRGB(1, 0, 0)  # Red
-#         c.setLineWidth(2)
-
-#         # Define grid parameters according to the blank log
-#         grid_start_x = 73.2  # Left edge of grid
-#         grid_start_y = 412.4 # Bottom edge of grid
-#         grid_width = 454.9   # Total width of the 24-hour grid
-#         grid_height = 19.2  # Total height of the activity grid
-
-#         # Define activity row positions (y-coordinates)
-#         activity_rows = {
-#             'OFF_DUTY': grid_start_y + grid_height * 0.8,
-#             'SLEEPER': grid_start_y + grid_height * 0.6,
-#             'Driving': grid_start_y + grid_height * 0.4,
-#             'ON_DUTY': grid_start_y + grid_height * 0.2,
-#         }
-
-#         # Function to convert 12-hour time string to x-coordinate
-#         def time_to_x_coord(time_str):
-#             try:
-#                 # Handle different possible 12-hour formats
-#                 if ':' in time_str:
-#                     # Format like "2:30 PM" or "10:45 AM"
-#                     time_parts = time_str.strip().split(' ')
-#                     hour_minute = time_parts[0].split(':')
-#                     hour = int(hour_minute[0])
-#                     minute = int(hour_minute[1]) if len(hour_minute) > 1 else 0
-#                     am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
-#                 else:
-#                     # Format like "2 PM" or "10 AM"
-#                     time_parts = time_str.strip().split(' ')
-#                     hour = int(time_parts[0])
-#                     minute = 0
-#                     am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
-                
-#                 # Convert to 24-hour format
-#                 if am_pm == 'PM' and hour < 12:
-#                     hour += 12
-#                 elif am_pm == 'AM' and hour == 12:
-#                     hour = 0
-                
-#                 # Calculate position on 24-hour grid
-#                 hour_fraction = hour + (minute / 60)
-#                 x_position = grid_start_x + (hour_fraction / 24) * grid_width
-#                 return x_position
-            
-#             except (ValueError, IndexError):
-#                 # Return default position if conversion fails
-#                 print(f"Could not parse time: {time_str}")
-#                 return grid_start_x
-            
-#         # Draw activity lines
-#         for activity in activities:
-#             # Get y-coordinate for this activity type
-#             y_position = activity_rows.get(activity.activity_type, grid_start_y)
-            
-#             # Get x-coordinates for start and end times
-#             start_x = time_to_x_coord(activity.start_time)
-#             end_x = time_to_x_coord(activity.end_time)
-            
-#             # Set line properties
-#             c.setStrokeColorRGB(0, 0, 0)  # Black line
-#             c.setLineWidth(2)             # Line thickness
-            
-#             # Draw the horizontal line
-#             c.line(start_x, y_position, end_x, y_position)
-            
-#             # Draw small vertical markers at start and end (optional)
-#             c.line(start_x, y_position - 5, start_x, y_position + 5)
-#             c.line(end_x, y_position - 5, end_x, y_position + 5)
-            
-#             # # Add activity description if space permits
-#             # if end_x - start_x > 50:  # Only add text if there's enough space
-#             #     c.setFont("Helvetica", 8)
-#             #     text_width = c.stringWidth(activity.description, "Helvetica", 8)
-#             #     if text_width < (end_x - start_x):
-#             #         c.drawString(start_x + 5, y_position + 8, activity.description)
-            
-#             # # Add location text below the grid (optional)
-#             # if activity.location:
-#             #     c.setFont("Helvetica", 8)
-#             #     c.drawString(start_x, grid_start_y - 15, activity.location)
-        
-#         c.save()
-        
-#         # Move to the beginning of the buffer
-#         overlay_buffer.seek(0)
-
-#         # Create a PDF from the buffer
-#         overlay_pdf = PdfReader(overlay_buffer)
-
-#         # Merge the overlay with the template page
-#         template_page.merge_page(overlay_pdf.pages[0])
-        
-#         # Write the output PDF to the response buffer
-#         output_pdf.write(buffer)
-#         buffer.seek(0)
-        
-#         # Create response with PDF
-#         response = HttpResponse(buffer, content_type='application/pdf')
-#         response['Content-Disposition'] = f'attachment; filename="driver_log.pdf"'
-#         print(type(response))
-        
-#         return response
-        
-#     except LogSheet.DoesNotExist:
-#         return Response({'error': 'Log sheet not found'}, status=404)
-#     except Exception as e:
-#         return Response({'error': str(e)}, status=500)
