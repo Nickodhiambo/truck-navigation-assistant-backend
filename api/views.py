@@ -6,6 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 # Django imports
+import os
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 
@@ -16,6 +18,7 @@ from .serializers import (
     LogSheetSerializer, LogSheetDetailSerializer, RouteRequestSerializer,
     RouteResponseSerializer, GeocodingRequestSerializer
 )
+from accounts.models import DriverProfile
 
 # Third part API imports
 import datetime
@@ -24,6 +27,7 @@ import requests
 import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from PyPDF2 import PdfReader, PdfWriter
 from datetime import timedelta
 from geopy.geocoders import Nominatim
     
@@ -56,6 +60,14 @@ class RecentTripsView(APIView):
         # Get 5 most recent trips
         trips = Trip.objects.filter(driver=request.user).order_by('-created_at')[:5]
         serializer = TripSerializer(trips, many=True)
+        return Response(serializer.data)
+
+class AllTripsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self,request):
+        trip_details = Trip.objects.filter(driver=request.user).order_by('-created_at')
+        serializer = TripSerializer(trip_details, many=True)
         return Response(serializer.data)
         
 class RoutePlannerView(APIView):
@@ -93,6 +105,37 @@ class RoutePlannerView(APIView):
             )
 
             trip.save()
+
+            cycle_hours = current_hours.cycle_used + route_data['total_hours']
+
+            # Create a logsheet instance to receive trip activity information
+            logsheet = LogSheet.objects.create(
+                driver=request.user,
+                trip = trip,
+                date = datetime.date.today(),
+                hours_logged = route_data['total_hours'],
+                cycle_hours = cycle_hours,
+            )
+
+            logsheet.save()
+
+            stops = route_data['stops']
+            for stop in stops:
+                activity = stop['activity']
+                start_time, end_time = stop['arrival_time'], stop['departure_time']
+                location, type = stop['location'], stop['type']
+            
+                # Log activity on sheet
+                log_activity = LogActivity.objects.create(
+                    log_sheet=logsheet,
+                    activity_type = activity,
+                    location = location,
+                    description = type,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+
+                log_activity.save()
 
             # Update hours of service after route calculation
             self._update_hours_of_service(
@@ -190,8 +233,10 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, current_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': current_time.strftime('%I:%M %p'),
-            'duration': 0
+            'duration': 0,
+            'activity': 'OFF_DUTY'
         })
+
         
         # Calculate drive to pickup
         current_driving_segment = to_pickup_duration
@@ -220,7 +265,8 @@ class RoutePlannerView(APIView):
                 'coordinates': self._geocode_location(geolocator, break_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
-                'duration': 0.5
+                'duration': 0.5,
+                'activity': 'ON_DUTY'
             })
             
             # Update times
@@ -241,7 +287,8 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, pickup_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
-            'duration': 1.0
+            'duration': 1.0,
+            'activity': 'ON_DUTY'
         })
         
         # Update current time after pickup
@@ -255,7 +302,8 @@ class RoutePlannerView(APIView):
                 'coordinates': self._geocode_location(geolocator, pickup_location),
                 'arrival_time': current_time.strftime('%I:%M %p'),
                 'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
-                'duration': 10.0
+                'duration': 10.0,
+                'activity': 'SLEEPER'
             })
             current_time += timedelta(hours=10)
             current_driving_used = 0
@@ -293,7 +341,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=30)).strftime('%I:%M %p'),
-                    'duration': 0.5
+                    'duration': 0.5,
+                    'activity': 'ON_DUTY'
                 })
                 
                 current_time += timedelta(minutes=30)
@@ -314,7 +363,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, rest_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(hours=10)).strftime('%I:%M %p'),
-                    'duration': 10.0
+                    'duration': 10.0,
+                    'activity': 'SLEEPER'
                 })
                 
                 current_time += timedelta(hours=10)
@@ -347,7 +397,8 @@ class RoutePlannerView(APIView):
                     'coordinates': self._geocode_location(geolocator, fuel_location),
                     'arrival_time': current_time.strftime('%I:%M %p'),
                     'departure_time': (current_time + timedelta(minutes=15)).strftime('%I:%M %p'),
-                    'duration': 0.25
+                    'duration': 0.25,
+                    'activity': 'ON_DUTY'
                 })
                 
                 current_time += timedelta(minutes=15)
@@ -364,21 +415,22 @@ class RoutePlannerView(APIView):
             'coordinates': self._geocode_location(geolocator, dropoff_location),
             'arrival_time': current_time.strftime('%I:%M %p'),
             'departure_time': (current_time + timedelta(hours=1)).strftime('%I:%M %p'),
-            'duration': 1.0
+            'duration': 1.0,
+            'activity': 'ON_DUTY'
         })
         
         # Calculate total trip time
         first_stop_time = datetime.strptime(stops[0]['arrival_time'], '%I:%M %p')
         last_stop_time = datetime.strptime(stops[-1]['departure_time'], '%I:%M %p')
+
         
         # Handle date crossing
         if last_stop_time < first_stop_time:
             # Add a day
-            last_stop_time = last_stop_time + timedelta(days=1)
+            last_stop_time = last_stop_time + timedelta(hours=24)
         
         total_trip_time = (last_stop_time - first_stop_time).total_seconds() / 3600
 
-        print(stops)
         
         return {
             'total_distance': round(total_distance, 1),
@@ -418,7 +470,7 @@ class RoutePlannerView(APIView):
         # Using a public OSRM instance
         base_url = "https://router.project-osrm.org/route/v1/driving/"
         url = f"{base_url}{start_coords};{end_coords}?overview=full&alternatives=false&steps=true"
-        print(start_coords, end_coords)
+       
         
         response = requests.get(url)
         if response.status_code != 200:
@@ -455,9 +507,16 @@ class RoutePlannerView(APIView):
             current_distance += step['distance']
             if current_distance >= target_distance:
                 # Extract a location name from the step instructions
-                instruction = step.get('name', '')
+                instruction = step.get('maneuver', {}).get('location', [])
                 if instruction:
-                    step_location = f"Rest Area near {instruction}"
+                    long = instruction[0]
+                    lat = instruction[1]
+
+                    geolocator = Nominatim(user_agent="trucking_route_planner")
+                    location = geolocator.reverse(f'{lat}, {long}')
+                    address = location.address
+
+                    step_location = address
                 break
         
         return step_location
@@ -474,7 +533,7 @@ class RoutePlannerView(APIView):
             str: Description of a fuel stop location
         """
         # Similar to finding rest stops, but looking for gas stations
-        # In production, you would use OSM or Overpass API to find actual gas stations
+        # Would use OSM or Overpass API to find actual gas stations
         steps = route.get('legs', [{}])[0].get('steps', [])
         
         # Find the step that corresponds roughly to the ratio
@@ -485,10 +544,16 @@ class RoutePlannerView(APIView):
         for step in steps:
             current_distance += step['distance']
             if current_distance >= target_distance:
-                # Extract a location name from the step instructions
-                instruction = step.get('name', '')
+                instruction = step.get('maneuver', {}).get('location', [])
                 if instruction:
-                    step_location = f"Fuel Station near {instruction}"
+                    long = instruction[0]
+                    lat = instruction[1]
+
+                    geolocator = Nominatim(user_agent="trucking_route_planner")
+                    location = geolocator.reverse(f'{lat}, {long}')
+                    address = location.address
+                    
+                    step_location = address
                 break
         
         return step_location
@@ -508,3 +573,144 @@ def reverse_geocode(request):
             {'formatted_address': address}
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+def generate_driver_log_pdf(request):
+    try:
+        from datetime import datetime
+        
+        # Try to get data but use defaults if not found
+        try:
+            driver_log = LogSheet.objects.get(date=datetime.today())
+            activities = driver_log.activities.all()
+            driver = DriverProfile.objects.get(user=request.user)
+        except:
+            print("Using placeholder data")
+            activities = []  # Empty list if no activities found
+
+        # Get current hours of service
+        import datetime
+        current_hours = HoursOfService.objects.get(
+                driver=request.user, 
+                date=datetime.date.today()
+            )
+        duty_used = str(current_hours.daily_used)
+        driving_used = str(current_hours.driving_used)
+        
+        # Create a fresh PDF
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+
+        c.setFont("Helvetica", 18)
+        c.setFillColorRGB(0, 0, 0)
+        c.drawString(50, 750, "Driver Log Sheet")
+        c.drawString(350, 750.0, driver_log.date.strftime('%m/%d/%Y'))
+        c.drawString(100, 710, f'Tractor number: {driver.driver_license}')
+        c.drawString(100, 665.7, f'From: {driver_log.trip.pickup_location}')
+        c.drawString(331.5, 667.7, f'To: {driver_log.trip.dropoff_location}')
+        c.drawString(100, 630.3, f'Total Distance (miles): {str(driver_log.trip.distance)}')
+        c.drawString(100, 600, f'Total driving time (Hrs): {driving_used}')
+        c.drawString(331.5, 600, f'Total duty time (Hrs): {duty_used}')
+        
+        # Define grid parameters 
+        grid_start_x = 73.2
+        grid_start_y = 412.4
+        grid_width = 454.9
+        grid_height = 19.2
+
+        # Define activity row positions (y-coordinates)
+        activity_rows = {
+            'OFF_DUTY': grid_start_y + (3 * grid_height),
+            'SLEEPER': grid_start_y + (2 * grid_height),
+            'Driving': grid_start_y + (1 * grid_height),
+            'ON_DUTY': grid_start_y
+        }
+
+        # Function to convert 12-hour time string to x-coordinate
+        def time_to_x_coord(time_str):
+            try:
+                # Handle different possible 12-hour formats
+                if ':' in time_str:
+                    # Format like "2:30 PM" or "10:45 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour_minute = time_parts[0].split(':')
+                    hour = int(hour_minute[0])
+                    minute = int(hour_minute[1]) if len(hour_minute) > 1 else 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                else:
+                    # Format like "2 PM" or "10 AM"
+                    time_parts = time_str.strip().split(' ')
+                    hour = int(time_parts[0])
+                    minute = 0
+                    am_pm = time_parts[1].upper() if len(time_parts) > 1 else 'AM'
+                
+                # Convert to 24-hour format
+                if am_pm == 'PM' and hour < 12:
+                    hour += 12
+                elif am_pm == 'AM' and hour == 12:
+                    hour = 0
+                
+                # Calculate position on 24-hour grid
+                hour_fraction = hour + (minute / 60)
+                x_position = grid_start_x + (hour_fraction / 24) * grid_width
+                return x_position
+            
+            except (ValueError, IndexError):
+                # Return default position if conversion fails
+                print(f"Could not parse time: {time_str}")
+                return grid_start_x
+        
+        # Draw the grid framework
+        c.setStrokeColorRGB(0, 0, 1)  # Blue for grid lines
+        c.setLineWidth(1)
+        
+        # Draw horizontal grid lines
+        for i in range(5):
+            y = grid_start_y + (i * grid_height)
+            c.line(grid_start_x, y, grid_start_x + grid_width, y)
+        
+        # Draw vertical grid lines (24 hours)
+        for i in range(25):
+            x = grid_start_x + (i * (grid_width/24))
+            c.line(x, grid_start_y, x, grid_start_y + (4 * grid_height))
+        
+        # Label the grid
+        c.setFont("Helvetica", 8)
+        c.drawString(grid_start_x - 60, grid_start_y + (3 * grid_height), "OFF DUTY")
+        c.drawString(grid_start_x - 60, grid_start_y + (2 * grid_height), "SLEEPER")
+        c.drawString(grid_start_x - 60, grid_start_y + (1 * grid_height), "DRIVING")
+        c.drawString(grid_start_x - 60, grid_start_y, "ON DUTY")
+
+        for activity in activities:
+            # Get y-coordinate for this activity type
+            y_position = activity_rows.get(activity.activity_type, grid_start_y)
+            
+            # Get x-coordinates for start and end times
+            start_x = time_to_x_coord(activity.start_time)
+            end_x = time_to_x_coord(activity.end_time)
+            
+            # Set line properties
+            c.setStrokeColorRGB(0, 0, 0)  # Black line
+            c.setLineWidth(2)             # Line thickness
+            
+            # Draw the horizontal line
+            c.line(start_x, y_position, end_x, y_position)
+            
+        
+        # Save the canvas
+        c.save()
+        
+        # Reset the buffer position
+        buffer.seek(0)
+        
+        # Create response with PDF
+        response = HttpResponse(buffer, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="driver_log_test.pdf"'
+        
+        return response
+        
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return Response({'error': str(e)}, status=500)
