@@ -21,14 +21,17 @@ To set up and run the backend, ensure you have the following:
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/truck-navigation-backend.git
+   git clone https://github.com/Nickodhiambo/truck-navigation-assistant-backend.git
    ```
-2. Set up a virtual environment:
+2. Change into project directory:
+   ```bash
+   cd truck-navigation-assistant-backend
+3. Set up a virtual environment:
    ```bash
    python -m venv env
    source env/bin/activate  # On Windows: env\Scripts\activate
    ```
-3. Install dependencies:
+4. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
