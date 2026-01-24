@@ -29,7 +29,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['https://truck-navigation-assistant-backend.onrender.com']
 
 
 # Application definition
@@ -155,7 +155,9 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    'https://truck-navigation-assistant-frontend.vercel.app/'
+]
 
 # Additional security settings
 SECURE_SSL_REDIRECT = True
