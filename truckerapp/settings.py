@@ -155,9 +155,7 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
-    'https://truck-navigation-assistant-frontend.vercel.app/'
-]
+CORS_ALLOW_ALL_ORIGINS = True
 
 # Additional security settings
 SECURE_SSL_REDIRECT = True
